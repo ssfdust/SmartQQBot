@@ -26,7 +26,7 @@ class TucaoCore(object):
         global TUCAO_PATH
         try:
             tucao_file_path = TUCAO_PATH + str(group_id) + ".tucao"
-            with open(tucao_file_path, "w+") as tucao_file:
+            with open(tucao_file_path, "wb+") as tucao_file:
                 cPickle.dump(self.tucao_dict[str(group_id)], tucao_file)
             logger.info("RUNTIMELOG tucao saved. Now tucao list:  {0}".format(str(self.tucao_dict)))
         except Exception:
@@ -71,9 +71,15 @@ def tucao(msg, bot):
         core.load(group_id)
 
         logger.info("RUNTIMELOG tucao command detected.")
-        command = str(match.group(1)).decode('utf8')
-        key = str(match.group(2)).decode('utf8')
-        value = str(match.group(3)).decode('utf8')
+        try:
+            command = str(match.group(1)).decode('utf8')
+            key = str(match.group(2)).decode('utf8')
+            value = str(match.group(3)).decode('utf8')
+        except AttributeError:
+            command = bytes(match.group(1), encoding='utf8').decode('utf8')
+            key = bytes(match.group(2), encoding='utf8').decode('utf8')
+            value = bytes(match.group(3), encoding='utf8').decode('utf8')
+
 
         if command == 'learn':
             if group_id not in core.tucao_dict:
