@@ -24,14 +24,18 @@ def turing_robot(msg, bot):
     """
 
     global always_on
-    if msg.group_id not in always_on:
-        always_on[msg.group_id] = False
+    if msg.group_code not in always_on:
+        always_on[msg.group_code] = False
+
     querystring = {
         "key": apikey,
         "info": msg.content,
     }
-
-    if 'Elisa' in msg.content or always_on[msg.group_id]:
+    if msg.content == '!always_turing':
+        always_on[msg.group_code] = True
+    elif msg.content == '!noalways_turing':
+        always_on[msg.group_code] = False
+    elif 'Elisa' in msg.content or always_on[msg.group_code]:
         querystring['info'] = querystring['info'].replace('Elisa', '')
         response = requests.request("GET", url, params=querystring)
 
@@ -52,7 +56,3 @@ def turing_robot(msg, bot):
                         reply_m += __data + '\n'
 
         bot.reply_msg(msg, reply_m)
-    elif msg.content == '!always_turing':
-        always_on[msg.group_id] = True
-    elif msg.content == '!noalways_turing':
-        always_on[msg.group_id] = False
