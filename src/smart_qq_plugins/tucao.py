@@ -18,6 +18,7 @@ class TucaoCore(object):
 
     def __init__(self):
         self.tucao_dict = dict()
+        self.blocklist = ['鸭', '飘', ' ']
 
     def save(self, group_id):
         """
@@ -57,6 +58,7 @@ class TucaoCore(object):
 
 
 
+
 core = TucaoCore()
 
 @on_group_message(name='tucao[学习遗忘]')
@@ -84,6 +86,10 @@ def tucao(msg, bot):
         if command == 'learn':
             if group_id not in core.tucao_dict:
                 core.load(group_id)
+            for block_key in core.blocklist:
+                if block_key in key:
+                    reply('已屏蔽此关键字:' + block_key)
+                    return False
             if key in core.tucao_dict[group_id] and value not in core.tucao_dict[group_id][key]:
                 core.tucao_dict[group_id][key].append(value)
             else:

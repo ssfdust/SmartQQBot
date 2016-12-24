@@ -10,7 +10,7 @@ def translate(msg, bot):
     if "翻译" in msg.content:
         tmp_str = str(msg.content)
         target_str = tmp_str.replace('翻译', '')
-        reg_ex = re.match(r'([a-zA-Z ]*)', target_str)
+        reg_ex = re.match(r'([a-zA-Z- ]*)', target_str)
         if reg_ex.string == reg_ex.group(0):
             res = subprocess.Popen('ydcv' + reg_ex.group(0),shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True)
             result = res.stdout.readlines()
