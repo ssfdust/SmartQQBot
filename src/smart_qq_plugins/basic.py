@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import random
+import re
 
 from smart_qq_bot.logger import logger
 from smart_qq_bot.signals import (
@@ -24,11 +25,32 @@ REPLY_SUFFIX = (
 
 @on_all_message(name='basic[callout]')
 def callout(msg, bot):
+    reply = bot.reply_msg(msg, return_function=True)
+    reply_content = ''
     if "智障机器人" in msg.content:
-        reply = bot.reply_msg(msg, return_function=True)
         logger.info("RUNTIMELOG " + str(msg.from_uin) + " calling me out, trying to reply....")
         reply_content = "干嘛（‘·д·）" + random.choice(REPLY_SUFFIX)
-        reply(reply_content)
+    elif re.match('(Elisa|@Elisa) 帮助$', msg.content):
+        reply_content =  '吐槽功能：\n'
+        reply_content += '学习一个语句：\n'
+        reply_content += '!learn{pattern}{reply}\n'
+        reply_content += '遗忘一个语句：\n'
+        reply_content += '!delete{pattern}{reply}\n'
+        reply_content += '!吐槽列表 /* 显示全部语句 */\n'
+        reply_content += '!删除关键字{keyword} /* 删除该关键字全部内容 */\n'
+        reply_content += '翻译功能:\n'
+        reply_content += 'Elisa 翻译 我喜欢你啊(突然发疯\n'
+        reply_content += 'Elisa 翻译 I love Some Wind(Be crazy suddenly\n'
+        reply_content += '翻译 common\n'
+        reply_content += '翻译 岛风\n'
+        reply_content += '重复功能：\n'
+        reply_content += '当同一句话被重复两次的时候，会自动回复，但是无法抢红包\n'
+        reply_content += '搜索功能：\n'
+        reply_content += 'archwiki{systemd} /* 搜索Archwiki */\n'
+        reply_content += 'google{Somewhere In Time} /* 搜索Google */\n'
+        reply_content += '人机对话:\n'
+        reply_content += 'Elisa 禅客相逢唯弹指 此心能有几人知 那如何是此心呢'
+    reply(reply_content)
 
 
 # =====复读插件=====

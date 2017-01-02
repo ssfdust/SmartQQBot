@@ -2,6 +2,7 @@
 from random import randint
 import requests
 import json
+import re
 
 from smart_qq_bot.signals import (
         on_all_message,
@@ -15,6 +16,7 @@ from smart_qq_bot.signals import (
 always_on = {}
 url = 'http://www.tuling123.com/openapi/api'
 apikey = '555f72fcc51a468c88614e9f3d1beb66'
+reg = re.compile(r'(Elisa|@Elisa)')
 
 @on_group_message(name='turing_robot')
 def turing_robot(msg, bot):
@@ -26,18 +28,23 @@ def turing_robot(msg, bot):
     global always_on
     if msg.group_code not in always_on:
         always_on[msg.group_code] = False
+    group_code = str(msg.group_code)
+    group_id = str(bot.get_group_info(group_code=group_code).get('id'))
 
     querystring = {
         "key": apikey,
         "info": msg.content,
+        "userid": group_id
     }
     if msg.content == '!always_turing':
         always_on[msg.group_code] = True
     elif msg.content == '!noalways_turing':
         always_on[msg.group_code] = False
     elif 'Elisa' in msg.content or always_on[msg.group_code]:
-        querystring['info'] = querystring['info'].replace('Elisa', '')
-        response = requests.request("GET", url, params=querystring)
+        querystring['info'] = re.sub(reg, '', querystring['info'])
+        if re.match(' 帮助$', querystring['info']) or re.match('^[\s]*翻译\s',  querystring['info']):
+            return False
+        response = requests.request("POST", url, params=querystring)
 
         response_json = response.json()
         reply_m = ''
@@ -54,5 +61,7 @@ def turing_robot(msg, bot):
                         pass
                     for __data in _data.values():
                         reply_m += __data + '\n'
-
+        
+        reply_m = re.sub(r'\n$', '', reply_m)
         bot.reply_msg(msg, reply_m)
+

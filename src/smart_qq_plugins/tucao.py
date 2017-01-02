@@ -9,6 +9,7 @@ from smart_qq_bot.logger import logger
 from smart_qq_bot.signals import (
     on_all_message,
     on_group_message,
+    on_private_message
 )
 
 TUCAO_PATH = 'smart_qq_plugins/tucao/'
@@ -18,7 +19,8 @@ class TucaoCore(object):
 
     def __init__(self):
         self.tucao_dict = dict()
-        self.blocklist = ['鸭', '飘', ' ']
+        self.blocklist = ['鸭', '飘', ' ', '尘遗楞莲']
+        self.enable_learn_dict = dict()
 
     def save(self, group_id):
         """
@@ -68,7 +70,7 @@ def tucao(msg, bot):
     group_code = str(msg.group_code)
     group_id = str(bot.get_group_info(group_code=group_code).get('id'))
 
-    match = re.match(r'^(?:!|！)(learn|delete)(?:\s?){(.+)}(?:\s?){(.+)}', msg.content)
+    match = re.match(r'^(?:!|！)(learn|delete)(?:\s?){(.+?)}(?:\s?){(.+)}', msg.content)
     if match:
         core.load(group_id)
 
@@ -82,8 +84,13 @@ def tucao(msg, bot):
             key = bytes(match.group(2), encoding='utf8').decode('utf8')
             value = bytes(match.group(3), encoding='utf8').decode('utf8')
 
+        if group_id in core.enable_learn_dict and core.enable_learn_dict[group_id] == False:
+            reply('禁止学习中')
+        elif group_id not in core.enable_learn_dict:
+            core.enable_learn_dict[group_id] = True
 
-        if command == 'learn':
+
+        if command == 'learn' and core.enable_learn_dict[group_id] == True:
             if group_id not in core.tucao_dict:
                 core.load(group_id)
             for block_key in core.blocklist:
@@ -98,7 +105,7 @@ def tucao(msg, bot):
             core.save(group_id)
             return True
 
-        elif command == 'delete':
+        elif command == 'delete' and core.enable_learn_dict[group_id] == True:
             if key in core.tucao_dict[group_id] and core.tucao_dict[group_id][key].count(value):
                 core.tucao_dict[group_id][key].remove(value)
                 reply("呜呜呜我再也不说" + str(value) + "了")
@@ -107,7 +114,7 @@ def tucao(msg, bot):
     else:
         core.load(group_id)
         for key in list(core.tucao_dict[group_id].keys()):
-            if str(key) in msg.content and core.tucao_dict[group_id][key]:
+            if re.match(key, msg.content) and core.tucao_dict[group_id][key]:
                 logger.info("RUNTIMELOG tucao pattern detected, replying...")
                 reply(random.choice(core.tucao_dict[group_id][key]))
                 return True
@@ -133,6 +140,7 @@ def current_tucao_list(msg, bot):
         if command == "吐槽列表":
             result = ""
             for key in list(core.tucao_dict[group_id].keys()):
+                if key == 'IrisWind': continue
                 result += "关键字：{0}\t\t回复：{1}\n".format(key, " / ".join(core.tucao_dict[group_id][key]))
             result = result[:-1]
             logger.info("RUNTIMELOG Replying the list of tucao for group {}".format(group_id))
@@ -162,3 +170,44 @@ def delete_tucao(msg, bot):
             core.save(group_id)
             return True
     return False
+
+@on_private_message(name='tucao[禁止开启学习]')
+def bool_learn(msg, bot):
+    global core
+    reply = bot.reply_msg(msg, return_function=True)
+
+    match = re.match(r'^(?:!|！)([^\s\{\}]+)(?:\s?)\{([^\s\{\}]+)\}\s*$', msg.content)
+    if match:
+        command = str(match.group(1))
+        arg1 = str(match.group(2))
+        logger.info("RUNTIMELOG command format detected, command:{0}, arg1:{1}".format(command, arg1))
+        if command == 'disable_learn':
+            core.enable_learn_dict[arg1] = False
+        elif command == 'enable_learn':
+            core.enable_learn_dict[arg1] = True
+
+
+'''
+@on_group_message(name='tucao[广告喊话]')
+def delete_tucao(msg, bot):
+    global core
+    reply = bot.reply_msg(msg, return_function=True)
+    group_code = str(msg.group_code)
+    group_id = str(bot.get_group_info(group_code=group_code).get('id'))
+
+    match = re.match(r'^(?:!|！)([^\s\{\}]+)(?:\s?)\{([^\s\{\}]+)\}\s*$', msg.content)
+    if match:
+        core.load(group_id)
+
+        command = str(match.group(1))
+        arg1 = str(match.group(2))
+        logger.info("RUNTIMELOG command format detected, command:{0}, arg1:{1}".format(command, arg1))
+        if command == "删除关键字" and six.text_type(arg1) in core.tucao_dict[group_id]:
+            core.tucao_dict[group_id].pop(
+                six.text_type(arg1)
+            )
+            reply("已删除关键字:{0}".format(arg1))
+            core.save(group_id)
+            return True
+    return False
+'''
