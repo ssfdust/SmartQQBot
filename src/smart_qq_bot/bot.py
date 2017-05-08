@@ -6,9 +6,20 @@ import os
 import time
 import re
 import json
-import cgi
 from random import randint
 from threading import Thread
+
+try:
+    from html import unescape as html_unescape
+except ImportError:
+    from HTMLParser import HTMLParser
+    html_parser = HTMLParser()
+    def html_unescape(s):
+        return html_parser.unescape(s)
+
+def unescape_json_response(s):
+    return html_unescape(s.replace('&#92;', r'\\').replace('&quot;', r'\"')).replace(u"\xa0", ' ')
+
 
 from smart_qq_bot.logger import logger
 from smart_qq_bot.config import QR_CODE_PATH, SMART_QQ_REFER
@@ -30,6 +41,7 @@ QR_CODE_STATUS = {
 }
 
 MESSAGE_SENT = {
+    100100,
     1202,
     0,
 }
@@ -123,6 +135,39 @@ class QQBot(object):
         hash_str = int(hash_str & 2147483647)
         return hash_str
 
+    @staticmethod
+    def _hash_digest(uin, ptwebqq):
+        """
+        计算hash，貌似TX的这个算法会经常变化，暂时不使用
+        get_group_list_with_group_code 会依赖此数据
+        提取自http://pub.idqqimg.com/smartqq/js/mq.js
+        :param uin:
+        :param ptwebqq:
+        :return:
+        """
+        N = [0, 0, 0, 0]
+        # print(N[0])
+        for t in range(len(ptwebqq)):
+            N[t % 4] ^= ord(ptwebqq[t])
+        U = ["EC", "OK"]
+        V = [0, 0, 0, 0]
+        V[0] = int(uin) >> 24 & 255 ^ ord(U[0][0])
+        V[1] = int(uin) >> 16 & 255 ^ ord(U[0][1])
+        V[2] = int(uin) >> 8 & 255 ^ ord(U[1][0])
+        V[3] = int(uin) & 255 ^ ord(U[1][1])
+        U = [0, 0, 0, 0, 0, 0, 0, 0]
+        for T in range(8):
+            if T % 2 == 0:
+                U[T] = N[T >> 1]
+            else:
+                U[T] = V[T >> 1]
+        N = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F"]
+        V = ""
+        for T in range(len(U)):
+            V += N[U[T] >> 4 & 15]
+            V += N[U[T] & 15]
+        return V
+
     def _get_group_sig(self, guin, tuin, service_type=0):
         key = '%s --> %s' % (guin, tuin)
         if key not in self._group_sig_list:
@@ -200,7 +245,8 @@ class QQBot(object):
                             '&u1=http%3A%2F%2Fw.qq.com%2Fproxy.html%3Flogin2qq%3D1%26webqq_type%3D10' \
                             '&ptredirect=0&ptlang=2052&daid=164&from_ui=1&pttype=1&dumy=' \
                             '&fp=loginerroralert&action=0-0-{1}&mibao_css={2}' \
-                            '&t=undefined&g=1&js_type=0&js_ver={3}&login_sig={4}'
+                            '&t=undefined&g=1&js_type=0&js_ver={3}&login_sig={4}' \
+                            '&ptqrtoken={5}'
 
         init_url = "https://ui.ptlogin2.qq.com/cgi-bin/login?" \
                    "daid=164&target=self&style=16&mibao_css=m_webqq" \
@@ -247,6 +293,7 @@ class QQBot(object):
                 'https://ssl.ptlogin2.qq.com/ptqrshow?appid={0}&e=0&l=L&s=8&d=72&v=4'.format(appid),
                 self.qrcode_path
             )
+            qrsig = self.client.get_cookie('qrsig')
             if not no_gui:
                 thread = Thread(target=show_qr, args=(self.qrcode_path, ))
                 thread.setDaemon(True)
@@ -255,7 +302,7 @@ class QQBot(object):
             while True:
                 ret_code, redirect_url = self._get_qr_login_status(
                     qr_validation_url, appid, start_time, mibao_css, js_ver,
-                    sign, init_url
+                    sign, init_url, qrsig
                 )
 
                 if ret_code in (
@@ -281,9 +328,15 @@ class QQBot(object):
             logger.debug("QR Login redirect_url response: %s" % html)
             return True
 
+    def _hash_for_qrsig(self, qrsig):
+        e = 0
+        for i in qrsig:
+            e += (e << 5) + ord(i)
+        return 2147483647 & e;
+
     def _get_qr_login_status(
             self, qr_validation_url, appid, star_time,
-            mibao_css, js_ver, sign, init_url
+            mibao_css, js_ver, sign, init_url, qrsig
     ):
         redirect_url = None
         login_result = self.client.get(
@@ -292,7 +345,8 @@ class QQBot(object):
                 date_to_millis(datetime.datetime.utcnow()) - star_time,
                 mibao_css,
                 js_ver,
-                sign
+                sign,
+                self._hash_for_qrsig(qrsig)
             ),
             init_url
         )
@@ -306,14 +360,15 @@ class QQBot(object):
     def login(self, no_gui=False):
         try:
             self._login_by_cookie()
-        except CookieLoginFailed:
-            logger.exception(CookieLoginFailed)
+        except CookieLoginFailed as e:
+            logger.exception(e)
             while True:
                 if self._login_by_qrcode(no_gui):
                     if self._login_by_cookie():
                         break
                 time.sleep(4)
         user_info = self.get_self_info()
+        self.query_friends_accounts()
         self.get_online_friends_list()
         self.get_group_list_with_group_id()
         self.get_group_list_with_group_code()
@@ -354,13 +409,13 @@ class QQBot(object):
         try:
             ret = json.loads(response)
         except ValueError:
-            logger.warning("RUNTIMELOG decode poll response error.")
-            logger.debug("RESPONSE {}".format(response))
+            logger.warning("decode poll response error.")
+            logger.debug("{}".format(response))
             return
 
         ret_code = ret['retcode']
 
-        if ret_code in (0, 116):
+        if ret_code in (0, 116, 1202):
             self._last_pool_success = True
             if ret_code == 0:
                 if 'result' not in ret or len(ret['result']) == 0:
@@ -384,6 +439,63 @@ class QQBot(object):
                 logger.warning("Pooling returns unknown retcode %s" % ret_code)
         return None
 
+    def query_friends_accounts(self):
+        try:
+            rsp = self.client.post(
+                    'http://qun.qq.com/cgi-bin/qun_mgr/get_friend_list',
+                    data={'bkn': self.bkn},
+                    refer='http://qun.qq.com/member.html',
+                )
+            rsp = unescape_json_response(rsp)
+            logger.debug("get_friend_list html:\t{}".format(str(rsp)))
+            friend_groups = json.loads(rsp).get('result', {})
+            qq_list = []
+            for member_list in friend_groups.values():
+                qq_list += member_list.get('mems', [])
+
+            rsp = self.client.post(
+                'http://s.web2.qq.com/api/get_user_friends2',
+                {
+                    'r': json.dumps(
+                        {
+                            "vfwebqq": self.vfwebqq,
+                            "hash": self._hash_digest(self._self_info['uin'], self.ptwebqq),
+                        }
+                    )
+                },
+            )
+            logger.debug("get_user_friends2 html:\t{}".format(str(rsp)))
+            rsp = json.loads(rsp)
+            uin_list = [[str(friend['nick']), str(friend['uin'])] for friend in rsp['result']['info']]
+            for friend in rsp['result'].get('marknames', []):
+                for idx, (nick, uin) in enumerate(uin_list):
+                    if str(uin) == str(friend['uin']):
+                        uin_list[idx][0] = friend['markname']
+
+            result_dict = {}
+            duplicated_name = set()
+            for friend in qq_list:
+                for tgt in uin_list:
+                    if friend['name'] == tgt[0]:
+                        if str(tgt[1]) not in result_dict:
+                            result_dict[str(tgt[1])] = str(friend['uin']) # 这个uin是真实qq号
+                        else:
+                            duplicated_name.add(tgt[0])
+                            result_dict[str(tgt[1])] = ""
+
+            if len(duplicated_name) != 0:
+                logger.warning(
+                    "存在多个好友使用以下昵称，无法唯一确定这些好友的真实QQ号，请通过修改备注名以唯一确定：{}".format(
+                        " ".join(list(duplicated_name))
+                        )
+                    )
+            for uin, account in result_dict.items():
+                self.friend_uin_list[uin] = {'account': account}
+
+        except Exception as e:
+            logger.warning("获取好友真实qq号失败, {}".format(e))
+
+
     def uin_to_account(self, tuin):
         """
         将uin转换成用户QQ号
@@ -392,26 +504,33 @@ class QQBot(object):
         """
         uin_str = str(tuin)
         try:
-            logger.info("RUNTIMELOG Requesting the account by uin:    " + str(tuin))
-            info = json.loads(
-                self.client.get(
-                    'http://s.web2.qq.com/api/get_friend_uin2?tuin={0}&type=1&vfwebqq={1}&t={2}'.format(
-                        uin_str,
-                        self.vfwebqq,
-                        self.client.get_timestamp()
-                    ),
-                    SMART_QQ_REFER
-                )
-            )
-            logger.debug("RESPONSE uin_to_account html:    " + str(info))
-            if info['retcode'] != 0:
-                raise TypeError('uin_to_account retcode error')
-            info = info['result']['account']
-            return info
+            logger.info("searching the account by uin:\t{}".format(str(tuin)))
 
-        except Exception:
-            logger.exception("RUNTIMELOG uin_to_account fail")
-            return None
+            return self.friend_uin_list.get(uin_str, {}).get('account', "")
+
+        except Exception as e:
+            logger.exception("uin_to_account fail, {}".format(e))
+            return ""
+
+    def account_to_uin(self, qq_account):
+        """
+        用户好友的QQ号转换成uin，注意，仅支持查询好友的uin
+        :param qq_account:
+        :return:str 用户uin
+        """
+        qq_account = str(qq_account)
+        try:
+            logger.info("searching the uin by account:\t{}".format(str(qq_account)))
+            for uin, info in self.friend_uin_list.items():
+                if info.get('account', '') == qq_account:
+                    return uin
+            logger.warning("没有找到{}对应的uin，请确认这个qq号是否是你的好友".format(qq_account))
+            logger.warning(str(self.friend_uin_list))
+            return ""
+
+        except Exception as e:
+            logger.exception("account_to_uin fail, {}".format(e))
+            return ""
 
     def get_self_info(self):
         """
@@ -446,28 +565,28 @@ class QQBot(object):
         get_online_buddies2
         :return:list
         """
-        logger.info("RUNTIMELOG Requesting the online buddies.")
-        response = self.client.get(
-            'http://d1.web2.qq.com/channel/get_online_buddies2?vfwebqq={0}&clientid={1}&psessionid={2}&t={3}'.format(
-                self.vfwebqq,
-                self.client_id,
-                self.psessionid,
-                self.client.get_timestamp(),
-            )
-        )  # {"result":[],"retcode":0}
-        logger.debug("RESPONSE get_online_buddies2 html:{}".format(response))
-        try:
-            online_buddies = json.loads(response)
-        except ValueError:
-            logger.warning("get_online_buddies2 response decode as json fail.")
-            return None
-
-        if online_buddies['retcode'] != 0:
-            logger.warning('get_online_buddies2 retcode is not 0. returning.')
-            return None
-
-        online_buddies = online_buddies['result']
-        return online_buddies
+        retry_times = 10
+        while retry_times:
+            logger.info("RUNTIMELOG Requesting the online buddies.")
+            response = self.client.get(
+                'http://d1.web2.qq.com/channel/get_online_buddies2?vfwebqq={0}&clientid={1}&psessionid={2}&t={3}'.format(
+                    self.vfwebqq,
+                    self.client_id,
+                    self.psessionid,
+                    self.client.get_timestamp(),
+                )
+            )  # {"result":[],"retcode":0}
+            logger.debug("RESPONSE get_online_buddies2 html:{}".format(response))
+            try:
+                online_buddies = json.loads(response)
+            except ValueError:
+                logger.warning("get_online_buddies2 response decode as json fail.")
+                return None
+            if online_buddies['retcode'] != 0:
+                logger.warning('get_online_buddies2 retcode is not 0. returning.')
+                return None
+            online_buddies = online_buddies['result']
+            return online_buddies
 
     def get_friend_info(self, tuin):
         """
@@ -539,57 +658,27 @@ class QQBot(object):
         ]
         """
 
-        def _hash_digest(uin, ptwebqq):
-            """
-            计算hash，貌似TX的这个算法会经常变化，暂时不使用
-            get_group_list_with_group_code 会依赖此数据
-            提取自http://pub.idqqimg.com/smartqq/js/mq.js
-            :param uin:
-            :param ptwebqq:
-            :return:
-            """
-            N = [0, 0, 0, 0]
-            # print(N[0])
-            for t in range(len(ptwebqq)):
-                N[t % 4] ^= ord(ptwebqq[t])
-            U = ["EC", "OK"]
-            V = [0, 0, 0, 0]
-            V[0] = int(uin) >> 24 & 255 ^ ord(U[0][0])
-            V[1] = int(uin) >> 16 & 255 ^ ord(U[0][1])
-            V[2] = int(uin) >> 8 & 255 ^ ord(U[1][0])
-            V[3] = int(uin) & 255 ^ ord(U[1][1])
-            U = [0, 0, 0, 0, 0, 0, 0, 0]
-            for T in range(8):
-                if T % 2 == 0:
-                    U[T] = N[T >> 1]
-                else:
-                    U[T] = V[T >> 1]
-            N = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F"]
-            V = ""
-            for T in range(len(U)):
-                V += N[U[T] >> 4 & 15]
-                V += N[U[T] & 15]
-            return V
 
 
-        logger.info("RUNTIMELOG Requesting the group list.")
+
+        logger.info("Requesting the group list.")
         response = self.client.post(
             'http://s.web2.qq.com/api/get_group_name_list_mask2',
             {
                 'r': json.dumps(
                     {
                         "vfwebqq": self.vfwebqq,
-                        "hash": _hash_digest(self._self_info['uin'], self.ptwebqq),
+                        "hash": self._hash_digest(self._self_info['uin'], self.ptwebqq),
                     }
                 )
             },
         )
         try:
+            logger.debug("get_group_name_list_mask2 html:\t{}".format(str(response)))
             response = json.loads(response)
         except ValueError:
             logger.warning("RUNTIMELOG The response of group list request can't be load as json")
             return
-        logger.debug("RESPONSE get_group_name_list_mask2 html:    " + str(response))
         if response['retcode'] != 0:
             raise TypeError('get_group_list_with_group_code result error')
         for group in response['result']['gnamelist']:
@@ -618,30 +707,46 @@ class QQBot(object):
             }
         ]
         """
-        if self._get_group_list:
-            response = self._get_group_list
-        else:
-            url = "http://qun.qq.com/cgi-bin/qun_mgr/get_group_list"
-            data = {'bkn': self.bkn}
-            response = self.client.post(url, data=data, refer='http://qun.qq.com/member.html')
-            self._get_group_list = response
-            logger.debug("get_group_list response: {}".format(response))
-        rsp_json = json.loads(response)
-        if rsp_json['ec'] == 0:
-            group_id_list = list()
-            group_id_list.extend(rsp_json.get('join') or [])
-            group_id_list.extend(rsp_json.get('manage') or [])
-            group_id_list.extend(rsp_json.get('create') or [])
-            if group_id_list:
-                for group in group_id_list:
-                    self.group_id_list[str(group['gc'])] = group
-                return group_id_list
+        try_times = 0
+        while try_times < 3:
+
+            if self._get_group_list:
+                response = self._get_group_list
             else:
-                logger.warning("seems this account didn't join any group: {}".format(response))
-                return []
-        else:
-            logger.warning("get_group_list code unknown: {}".format(response))
-            return None
+                url = "http://qun.qq.com/cgi-bin/qun_mgr/get_group_list"
+                data = {'bkn': self.bkn}
+                try:
+                    response = self.client.post(url, data=data, refer='http://qun.qq.com/member.html')
+                    response = unescape_json_response(response)
+                    self._get_group_list = response
+                    logger.debug("get_group_list response: {}".format(response))
+                except Exception as e:
+                    logger.debug(str(e))
+                    logger.warning("get_group_list_with_group_id API请求失败")
+                    try_times += 1
+                    continue
+
+            try:
+                rsp_json = json.loads(response)
+            except ValueError:
+                try_times += 1
+                logger.warning("get_group_list_with_group_id fail. {}".format(try_times))
+                continue
+            if rsp_json.get('ec') == 0:
+                group_id_list = list()
+                group_id_list.extend(rsp_json.get('join') or [])
+                group_id_list.extend(rsp_json.get('manage') or [])
+                group_id_list.extend(rsp_json.get('create') or [])
+                if group_id_list:
+                    for group in group_id_list:
+                        self.group_id_list[str(group['gc'])] = group
+                    return group_id_list
+                else:
+                    logger.warning("seems this account didn't join any group: {}".format(response))
+                    return []
+            else:
+                logger.warning("get_group_list code unknown: {}".format(response))
+                return None
 
     def get_true_group_code(self, fake_group_code):
         """
@@ -690,7 +795,7 @@ class QQBot(object):
                     'id':           0,
                     'group_code':   group_code_info['code'] or 0
                 }
-                name = cgi.escape(group_code_info['name']).replace(' ', '&nbsp;')
+                name = group_code_info['name']
                 group_id_list = [x for x in group_id_list if x['gn'] == name]
                 if len(group_id_list) == 1:
                     result['id'] = group_id_list[0].get('gc')
@@ -732,17 +837,18 @@ class QQBot(object):
         """
         获取指定群的成员信息
         :group_code: int, can be "ture" of "fake" group_code
-        {"retcode":0,"result":{"stats":[],"minfo":[{"nick":" 信","province":"山东","gender":"male","uin":3964575484,"country":"中国","city":""},{"nick":"崔震","province":"","gender":"unknown","uin":2081397472,"country":"","city":""},{"nick":"云端的猫","province":"山东","gender":"male","uin":3123065696,"country":"中国","city":"青岛"},{"nick":"要有光","province":"山东","gender":"male","uin":2609717081,"country":"中国","city":"青岛"},{"nick":"小莎机器人","province":"广东","gender":"female","uin":495456232,"country":"中国","city":"深圳"}],"ginfo":{"face":0,"memo":"http://hujj009.ys168.com\r\n0086+区(没0)+电话\r\n0086+手机\r\nhttp://john123951.xinwen365.net/qq/index.htm","class":395,"fingermemo":"","code":3943922314,"createtime":1079268574,"flag":16778241,"level":0,"name":"ぁQQぁ","gid":3931577475,"owner":3964575484,"members":[{"muin":3964575484,"mflag":192},{"muin":2081397472,"mflag":65},{"muin":3123065696,"mflag":128},{"muin":2609717081,"mflag":0},{"muin":495456232,"mflag":0}],"option":2},"cards":[{"muin":3964575484,"card":"●s.Εx2(22222)□"},{"muin":495456232,"card":"小莎机器人"}],"vipinfo":[{"vip_level":0,"u":3964575484,"is_vip":0},{"vip_level":0,"u":2081397472,"is_vip":0},{"vip_level":0,"u":3123065696,"is_vip":0},{"vip_level":0,"u":2609717081,"is_vip":0},{"vip_level":0,"u":495456232,"is_vip":0}]}}
+        {"result":{"cards":[{"card":"测试名片","muin":123456789}],"ginfo":{"class":27,"code":3281366860,"createtime":1457436527,"face":0,"fingermemo":"","flag":1090520065,"gid":3281366860,"level":0,"members":[{"mflag":0,"muin":1145751263},{"mflag":0,"muin":123456789},{"mflag":0,"muin":2123968182},{"mflag":1,"muin":271236123}],"memo":"","name":"测试群名","option":2,"owner":2123968182},"minfo":[{"city":"","country":"","gender":"male","nick":"测试2","province":"","uin":1145751263},{"city":"广州","country":"中国","gender":"male","nick":"测试1","province":"广东","uin":123456789},{"city":"广州","country":"中国","gender":"male","nick":"大","province":"广东","uin":2123968182},{"city":"","country":"中国","gender":"female","nick":"2","province":"","uin":271236123}],"stats":[],"vipinfo":[{"is_vip":0,"u":1145751263,"vip_level":0},{"is_vip":0,"u":123456789,"vip_level":0},{"is_vip":0,"u":2123968182,"vip_level":0},{"is_vip":0,"u":271236123,"vip_level":0}]},"retcode":0}
         :return:dict
         """
         if group_code == 0:
+            logger.debug("get_group_member_info_list 输入为0，返回 None")
             return
         try:
             url = "http://s.web2.qq.com/api/get_group_info_ext2?gcode=%s&vfwebqq=%s&t=%s" % (
                 group_code, self.vfwebqq, int(time.time() * 100))
             response = self.client.get(url)
+            logger.debug("get_group_member_info_list info response: {}".format(response))
             rsp_json = json.loads(response)
-            logger.debug("get_group_member_info_list info response: {}".format(rsp_json))
             retcode = rsp_json["retcode"]
             if retcode == 0:
                 result = rsp_json["result"]
@@ -755,7 +861,7 @@ class QQBot(object):
             self.group_member_info[str(group_code)] = result    # 缓存群成员信息, 此处会把真假group_code都加入cache
             return result
         except Exception as ex:
-            logger.warning("RUNTIMELOG get_group_member_info_list. Error: " + str(ex))
+            logger.warning("get_group_member_info_list. Error: " + str(ex))
             return
 
     def get_group_member_info(self, group_code, uin):
@@ -778,7 +884,7 @@ class QQBot(object):
         if group_code not in self.group_member_info:
             logger.info("group_code not in cache, try to request info")
             result = self.get_group_member_info_list(group_code)
-            if result is False:
+            if not result:
                 logger.warning("没有所查询的group_code信息")
                 return
 
@@ -797,40 +903,35 @@ class QQBot(object):
 
     def search_group_members(self, group_id):
         """
-        获取群成员详细信息的的列表, uin为真实QQ号, 并存入cache
+        获取群成员详细信息的的列表, u为真实QQ号, 并存入cache
         :type group_id: str
         :return:list
 
         return list sample
         [
             {
-              "card": "群名片",
-              "flag": 0,
-              "g": 255,
-              "join_time": 1385383309,
-              "last_speak_time": 1471325570,
-              "lv": {
-                "level": 6,
-                "point": 5490
-              },
-              "nick": "昵称",
-              "qage": 0,
-              "role": 0,
-              "tags": "-1",
-              "uin": 493658555
+                  "b": 0,
+                  "g": 0,
+                  "n": "昵称",
+                  "u": 466331426
+            },
+            {
+                  "b": 0,
+                  "g": 0,
+                  "n": "昵称",
+                  "u": 493658565
             }
         ]
         """
-        url = "http://qun.qq.com/cgi-bin/qun_mgr/search_group_members"
+        url = "http://qinfo.clt.qq.com/cgi-bin/qun_info/get_group_members_new"
         data = {
             'bkn':  self.bkn,
             'gc':   str(group_id),
-            'st':   0,
-            'end':  2000,
-            'sort': 0,
+            'u':   self._self_info.get('uin'),
         }
-        response = self.client.post(url, data=data, refer='http://qun.qq.com/member.html')
+        response = self.client.post(url, data=data, refer='http://qinfo.clt.qq.com/member.html')
         logger.debug("search_group_members response: {}".format(response))
+        response = unescape_json_response(response)
         rsp_json = json.loads(response)
         if rsp_json['ec'] == 0:
             return rsp_json.get('mems')
@@ -899,9 +1000,22 @@ class QQBot(object):
             ret = self.send_group_msg_partial(reply_content_partial, group_code, msg_id, fail_times)
             return ret;
 
+    def _quote(self, content):
+        return str(content.replace("\\", r"\\")
+                .replace("\r", r"\r")
+                .replace("\n", r"\n")
+                .replace('"', r'\"')
+                .replace("\t", r"\t")
+                )
+
+    injection_escape_regex = re.compile(r"(\band|\bor|\bxor|(?:^| )&&|(?:^| )\|\|)( +not)?( *'| +[0-9]+ )", re.I);
+    def quote(self, content):
+        content = self.injection_escape_regex.sub(r'\1_\2\3', content)
+        return self._quote(self._quote(content))
+
     # 发送部分群消息
     def send_group_msg_partial(self, reply_content, group_code, msg_id, fail_times=0):
-        fix_content = str(reply_content.replace("\\", "\\\\\\\\").replace("\n", "\\\\n").replace("\t", "\\\\t"))
+        fix_content = self.quote(reply_content)
         rsp = ""
         try:
             logger.info("Starting send group message: %s" % reply_content)
@@ -934,7 +1048,7 @@ class QQBot(object):
 
     # 发送私密消息
     def send_friend_msg(self, reply_content, uin, msg_id, fail_times=0):
-        fix_content = str(reply_content.replace("\\", "\\\\\\\\").replace("\n", "\\\\n").replace("\t", "\\\\t"))
+        fix_content = self.quote(reply_content)
         rsp = ""
         try:
             req_url = "http://d1.web2.qq.com/channel/send_buddy_msg2"
@@ -964,7 +1078,7 @@ class QQBot(object):
 
     # 发送讨论组消息
     def send_discuss_msg(self, reply_content, did, msg_id, fail_times=0):
-        fix_content = str(reply_content.replace("\\", "\\\\\\\\").replace("\n", "\\\\n").replace("\t", "\\\\t"))
+        fix_content = self.quote(reply_content)
         rsp = ""
         try:
             logger.info("Starting send discuss group message: %s" % reply_content)
