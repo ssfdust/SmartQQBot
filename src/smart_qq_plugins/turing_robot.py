@@ -65,7 +65,7 @@ def turing_robot(msg, bot):
                         reply_m += __data + '\n'
         
         reply_m = re.sub(r'\n$', '', reply_m)
-        if '你接错了，退出成语接龙模式' in reply_m:
+        if '退出成语接龙模式' in reply_m:
             always_on[msg.group_code] = False
         bot.reply_msg(msg, reply_m)
 
