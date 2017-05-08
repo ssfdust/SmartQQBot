@@ -42,6 +42,8 @@ def turing_robot(msg, bot):
         always_on[msg.group_code] = False
     elif 'Elisa' in msg.content or always_on[msg.group_code]:
         querystring['info'] = re.sub(reg, '', querystring['info'])
+        if '成语接龙' in querystring['info']:
+            always_on[msg.group_code] = True
         if re.match(' 帮助$', querystring['info']) or re.match('^[\s]*翻译\s',  querystring['info']):
             return False
         response = requests.request("POST", url, params=querystring)
@@ -63,5 +65,7 @@ def turing_robot(msg, bot):
                         reply_m += __data + '\n'
         
         reply_m = re.sub(r'\n$', '', reply_m)
+        if '你接错了，退出成语接龙模式' in reply_m:
+            always_on[msg.group_code] = False
         bot.reply_msg(msg, reply_m)
 
